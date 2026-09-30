@@ -6,10 +6,10 @@ from datetime import datetime
 
 def ask_platform():
     print("\n  Выберите платформу:")
-    print("    1 - Netify (Netify)")
+    print("    1 - Cloudflare (Cloudflare)")
     print("    2 - Gooogle (Gole)")
-    platform_input = input("Введите 1 или 2 (Enter = Netify): ").strip()
-    platform = "" if platform_input == "2" else "Netify"
+    platform_input = input("Введите 1 или 2 (Enter = Cloudflare): ").strip()
+    platform = "" if platform_input == "2" else "Cloudflare"
     print(f"Платформа: {platform}")
     return platform
 

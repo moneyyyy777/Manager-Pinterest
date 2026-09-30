@@ -78,7 +78,7 @@ def write_boards_tags(folder_path, tags):
 
 def create_folders_from_template():
     # --- НАСТРОЙКИ ---
-    source_base_path = '/Users/kalifornia/Desktop/Pinterest/Managers Pinterest (1)/All Folders/Creative Fabrica'
+    source_base_path = '/Managers Pinterest/All Folders/Creative Fabrica'
     current_dir = os.getcwd()
 
     # 1. Поиск папок с Template

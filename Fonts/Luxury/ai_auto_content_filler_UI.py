@@ -54,8 +54,8 @@ section[data-testid="stSidebar"] [data-testid="stCaptionContainer"] p { color: #
 .card-accent { border-left: 3px solid #a78bfa; }
 div[data-testid="stTextArea"] textarea { background: #0a0a12 !important; color: #c0c0e0 !important; border: 1px solid #252538 !important; }
 div.stButton > button[kind="primary"] { background: linear-gradient(135deg, #7c3aed, #a855f7) !important; border: none !important; color: white !important; font-weight: 700 !important; }
-.stRadio > div { background: #1a1a2e; padding: 10px; border-radius: 8px; border: 1px solid #2e2e4e; margin-bottom: 10px; }
-.stRadio * { color: #ffffff !important; }
+.stRadio > div { background: #1a1a2e; padding: 5px 10px; border-radius: 8px; border: 1px solid #2e2e4e; margin-bottom: 10px; }
+.stRadio * { color: #ffffff !important; font-size: 12px !important; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -129,7 +129,6 @@ def interact_with_ai_studio(prompt: str, expected_blocks: int, json_file_path: s
 
                     for _ in range(90):  # До 3 минут генерации
                         time.sleep(2)
-
                         page_content = page.content()
                         if "An internal error has occurred" in page_content or "Failed to generate content" in page_content:
                             raise Exception("AI Studio выдал внутреннюю ошибку.")
@@ -177,6 +176,28 @@ def clean_lines(raw):
         line = re.sub(r'^\d+[\.\)]\s*|^[*\-•]\s*|^`{3,}', '', line).replace("```", "").strip()
         if line: lines.append(line)
     return lines
+
+
+def load_qc_state(task_path):
+    """Читает состояние QC из файла qc_state.json в папке задачи."""
+    json_path = os.path.join(task_path, "qc_state.json")
+    if os.path.exists(json_path):
+        try:
+            with open(json_path, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except:
+            pass
+    return {"TITLES": "wait", "DESCS": "wait", "CTAS": "wait"}
+
+
+def save_qc_state(task_path, state):
+    """Сохраняет состояние QC в файл qc_state.json в папку задачи."""
+    json_path = os.path.join(task_path, "qc_state.json")
+    try:
+        with open(json_path, "w", encoding="utf-8") as f:
+            json.dump(state, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print(f"Ошибка сохранения QC: {e}")
 
 
 def scan_tasks(base_dir):
@@ -305,7 +326,6 @@ def build_prompt(strat_path, base_dir, target="ALL"):
     )
     return prompt, missing, expected, json_file
 
-
 def write_xlsx(xlsx_path, titles, descs, ctas):
     if not titles or not descs or not ctas:
         raise ValueError("Одно из полей пустое! Невозможно записать в Excel.")
@@ -322,9 +342,19 @@ def write_xlsx(xlsx_path, titles, descs, ctas):
 
 # ─── ИНИЦИАЛИЗАЦИЯ СОСТОЯНИЯ ──────────────────────────────────────────────────
 base_dir = os.path.dirname(os.path.abspath(__file__))
-if "tasks" not in st.session_state: st.session_state.tasks = scan_tasks(base_dir)
+
+if "tasks" not in st.session_state:
+    st.session_state.tasks = scan_tasks(base_dir)
+
+if "qc_state" not in st.session_state:
+    # Загружаем QC стейт из json-файлов для каждой папки
+    st.session_state.qc_state = {}
+    for i, t in enumerate(st.session_state.tasks):
+        st.session_state.qc_state[i] = load_qc_state(t["path"])
+
 if "done_set" not in st.session_state:
     st.session_state.done_set = {i for i, t in enumerate(st.session_state.tasks) if check_xlsx_filled(t["xlsx"])}
+
 if "cur_idx" not in st.session_state:
     remain = sorted(set(range(len(st.session_state.tasks))) - st.session_state.done_set)
     st.session_state.cur_idx = remain[0] if remain else 0
@@ -333,11 +363,8 @@ if "selected_tasks" not in st.session_state:
     st.session_state.selected_tasks = {i for i in range(len(st.session_state.tasks)) if
                                        i not in st.session_state.done_set}
 
-if "qc_state" not in st.session_state:
-    st.session_state.qc_state = {i: {"TITLES": "wait", "DESCS": "wait", "CTAS": "wait"} for i in
-                                 range(len(st.session_state.tasks))}
-
-if "ta_titles" not in st.session_state: update_text_areas(st.session_state.cur_idx)
+if "ta_titles" not in st.session_state:
+    update_text_areas(st.session_state.cur_idx)
 
 tasks = st.session_state.tasks
 cur = st.session_state.cur_idx
@@ -388,8 +415,11 @@ if st.session_state.get("auto_run_selected", False):
             if t and d and c:
                 write_xlsx(tasks[cur_target]["xlsx"], t, d, c)
                 st.session_state.done_set.add(cur_target)
+
+                # Сбрасываем QC на wait и сохраняем
                 st.session_state.qc_state[cur_target] = {"TITLES": "wait", "DESCS": "wait", "CTAS": "wait"}
-            st.rerun()  # Мгновенный переход к следующей папке!
+                save_qc_state(tasks[cur_target]["path"], st.session_state.qc_state[cur_target])
+            st.rerun()
         else:
             st.error(f"Сбой генерации для {tasks[cur_target]['strat']}. Авто-прогон остановлен.")
             st.session_state.auto_run_selected = False
@@ -415,10 +445,11 @@ elif st.session_state.get("qc_run_redos", False):
         st.session_state.cur_idx = target_idx
         update_text_areas(target_idx)
         success = True
-        for t in targets_to_redo:
-            st.toast(f"🔧 QC исправление {t}: {tasks[target_idx]['strat']}")
-            if run_ai_for_current_task(target_idx, t):
-                st.session_state.qc_state[target_idx][t] = "ok"  # Помечаем исправленным
+        for t_key in targets_to_redo:
+            st.toast(f"🔧 QC исправление {t_key}: {tasks[target_idx]['strat']}")
+            if run_ai_for_current_task(target_idx, t_key):
+                st.session_state.qc_state[target_idx][t_key] = "ok"
+                save_qc_state(tasks[target_idx]["path"], st.session_state.qc_state[target_idx])
             else:
                 success = False
                 break
@@ -429,7 +460,7 @@ elif st.session_state.get("qc_run_redos", False):
             c = clean_lines(st.session_state["ta_ctas"])
             write_xlsx(tasks[target_idx]["xlsx"], t, d, c)
             st.session_state.done_set.add(target_idx)
-            st.rerun()  # Мгновенно переходим к следующему исправлению!
+            st.rerun()
         else:
             st.session_state.qc_run_redos = False
 
@@ -450,7 +481,14 @@ with st.sidebar:
 
     st.caption("Галочка = папка участвует в Массовых действиях")
 
+    last_niche = None
     for i, t in enumerate(tasks):
+        if t["niche"] != last_niche:
+            st.markdown(
+                f"<div style='margin-top:14px;margin-bottom:4px;font-weight:bold;color:#a78bfa;font-size:13px;'>📁 {t['niche']}</div>",
+                unsafe_allow_html=True)
+            last_niche = t["niche"]
+
         col_cb, col_btn = st.columns([1, 6])
         is_sel = i in st.session_state.selected_tasks
 
@@ -462,6 +500,11 @@ with st.sidebar:
             st.rerun()
 
         icon = "✅" if i in st.session_state.done_set else ("📊" if t["xlsx"] else "❌")
+
+        # Индикатор QC в сайдбаре (если есть redo)
+        q = st.session_state.qc_state[i]
+        if "redo" in q.values(): icon = "🔴"
+
         if i == cur:
             col_btn.markdown(
                 f"<div style='background:#1e1030;border:1px solid #a78bfa;border-radius:6px;padding:4px;font-size:11px;color:#c4b5fd;'>▶ {t['strat']}</div>",
@@ -472,157 +515,144 @@ with st.sidebar:
                 update_text_areas(i)
                 st.rerun()
 
-# ─── MAIN APP ─────────────────────────────────────────────────────────────────
+# ─── MAIN APP (ГЕНЕРАЦИЯ + QC ВМЕСТЕ) ──────────────────────────────────────────
 if not tasks: st.stop()
 task = tasks[cur]
 
-tab_gen, tab_qc = st.tabs(["🚀 Режим Генерации & Управления", "👁 Режим QC (Контроль Качества)"])
-
-# ==============================================================================
-# ВКЛАДКА 1: ГЕНЕРАЦИЯ
-# ==============================================================================
-with tab_gen:
-    st.markdown("### ⚡ Массовые действия (без пауз)")
-    c1, c2 = st.columns(2)
-    with c1:
-        if st.button("▶️ Заполнить ПУСТЫЕ выбранные (Автоматом)", type="primary", use_container_width=True):
-            st.session_state.auto_run_selected = True
-            st.rerun()
-    with c2:
-        if st.button("⚠️ ПЕРЕЗАПИСАТЬ выбранные (Заново)", use_container_width=True):
-            st.session_state.show_confirm_overwrite = True
-            st.rerun()
-
-    if st.session_state.get("show_confirm_overwrite", False):
-        st.warning(
-            f"Начнется НЕПРЕРЫВНЫЙ авто-прогон для {len(st.session_state.selected_tasks)} папок. Старые данные в Excel будут перезаписаны сразу по мере генерации.")
-        cw1, cw2 = st.columns(2)
-        if cw1.button("🔴 ДА, НАЧАТЬ МАССОВУЮ ПЕРЕЗАПИСЬ", type="primary"):
-            st.session_state.show_confirm_overwrite = False
-            st.session_state.done_set = st.session_state.done_set - st.session_state.selected_tasks
-            st.session_state.auto_run_selected = True
-            st.rerun()
-        if cw2.button("Отмена"):
-            st.session_state.show_confirm_overwrite = False
-            st.rerun()
-
-    st.divider()
-
-    json_file_path = os.path.join(base_dir, "all_products.json")
-    if not os.path.exists(json_file_path): json_file_path = os.path.join(task['path'], "all_products.json")
-    json_text = f"📎 JSON: {os.path.basename(json_file_path)}" if os.path.exists(
-        json_file_path) else "⚠️ JSON не найден!"
-
-    st.markdown(f"""
-    <div class="card card-accent">
-      <div class="niche-badge">📁 {task['niche']} ➜ {task['strat']}</div>
-      <div style="font-size: 11px; color: #34d399;">📊 {task['xlsx']}</div>
-      <div style="font-size: 11px; color: #a78bfa; margin-top: 3px;">{json_text}</div>
-    </div>
-    """, unsafe_allow_html=True)
-
-    mc1, mc2 = st.columns(2)
-    with mc1:
-        if st.button("🤖 Сгенерировать ВСЁ для этой папки", use_container_width=True):
-            with st.spinner("Работаем с AI..."):
-                if run_ai_for_current_task(cur, "ALL"): st.rerun()
-    with mc2:
-        with st.popover("🔄 Точечная регенерация (исправить)"):
-            if st.button("Переделать ЗАГОЛОВКИ"):
-                if run_ai_for_current_task(cur, "TITLES"): st.rerun()
-            if st.button("Переделать ОПИСАНИЯ"):
-                if run_ai_for_current_task(cur, "DESCS"): st.rerun()
-            if st.button("Переделать CTA"):
-                if run_ai_for_current_task(cur, "CTAS"): st.rerun()
-
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        raw_t = st.text_area("📝 ЗАГОЛОВКИ", height=340, key="ta_titles")
-        titles = clean_lines(raw_t)
-        st.caption(f"Строк: {len(titles)}")
-    with col2:
-        raw_d = st.text_area("📖 ОПИСАНИЯ", height=340, key="ta_descs")
-        descs = clean_lines(raw_d)
-        st.caption(f"Строк: {len(descs)}")
-    with col3:
-        raw_c = st.text_area("🎯 CTA", height=340, key="ta_ctas")
-        ctas = clean_lines(raw_c)
-        st.caption(f"Строк: {len(ctas)}")
-
-    # ─── ФИНАЛЬНАЯ РУЧНАЯ ЗАПИСЬ ──────────────────────────────────────────────
-    write_ready = bool(titles and descs and ctas and task["xlsx"])
-    if st.button("💾 СОХРАНИТЬ ТЕКУЩУЮ В EXCEL", type="primary", use_container_width=True, disabled=not write_ready):
-        write_xlsx(task["xlsx"], titles, descs, ctas)
-        st.session_state.done_set.add(cur)
-        st.session_state.qc_state[cur] = {"TITLES": "wait", "DESCS": "wait", "CTAS": "wait"}
-        st.success("✅ Сохранено!")
-
-# ==============================================================================
-# ВКЛАДКА 2: QC (Контроль Качества)
-# ==============================================================================
-with tab_qc:
-    st.markdown("### 👁 Контроль качества заполнения")
-    st.caption("Проверьте тексты из Excel. Пометьте, какие блоки подходят, а какие ИИ должен переписать.")
-
-    qc_t = st.session_state.qc_state[cur]["TITLES"]
-    qc_d = st.session_state.qc_state[cur]["DESCS"]
-    qc_c = st.session_state.qc_state[cur]["CTAS"]
-
-
-    def set_qc(t, d, c):
-        st.session_state.qc_state[cur] = {"TITLES": t, "DESCS": d, "CTAS": c}
-
-
-    qc_b1, qc_b2 = st.columns(2)
-    if qc_b1.button("✅ ВСЁ ОТЛИЧНО (В этой папке)", use_container_width=True):
-        set_qc("ok", "ok", "ok")
+st.markdown("### ⚡ Массовые действия (без пауз)")
+c1, c2 = st.columns(2)
+with c1:
+    if st.button("▶️ Заполнить ПУСТЫЕ выбранные (Автоматом)", type="primary", use_container_width=True):
+        st.session_state.auto_run_selected = True
         st.rerun()
-    if qc_b2.button("🔴 ПЕРЕДЕЛАТЬ ВСЁ (В этой папке)", use_container_width=True):
-        set_qc("redo", "redo", "redo")
+with c2:
+    if st.button("⚠️ ПЕРЕЗАПИСАТЬ выбранные (Заново)", use_container_width=True):
+        st.session_state.show_confirm_overwrite = True
         st.rerun()
 
-    st.divider()
-
-
-    def qc_radio(label, current_val, key):
-        opts = {"wait": "⏳ Ждет проверки", "ok": "🟢 ОК", "redo": "🔴 Переделать"}
-        return st.radio(label, options=list(opts.keys()), format_func=lambda x: opts[x],
-                        index=list(opts.keys()).index(current_val), key=key, horizontal=True)
-
-
-    col_q1, col_q2, col_q3 = st.columns(3)
-    with col_q1:
-        new_t = qc_radio("Оценка ЗАГОЛОВКОВ", qc_t, f"qct_{cur}")
-        st.info("\n\n".join(clean_lines(st.session_state.get("ta_titles", ""))[:5]) + "\n\n...(показаны первые 5)")
-    with col_q2:
-        new_d = qc_radio("Оценка ОПИСАНИЙ", qc_d, f"qcd_{cur}")
-        st.success("\n\n".join(clean_lines(st.session_state.get("ta_descs", ""))[:5]) + "\n\n...(показаны первые 5)")
-    with col_q3:
-        new_c = qc_radio("Оценка CTA", qc_c, f"qcc_{cur}")
-        st.warning("\n\n".join(clean_lines(st.session_state.get("ta_ctas", ""))[:5]) + "\n\n...(показаны первые 5)")
-
-    if new_t != qc_t or new_d != qc_d or new_c != qc_c:
-        set_qc(new_t, new_d, new_c)
+if st.session_state.get("show_confirm_overwrite", False):
+    st.warning(
+        f"Начнется НЕПРЕРЫВНЫЙ авто-прогон для {len(st.session_state.selected_tasks)} папок. Старые данные в Excel будут перезаписаны.")
+    cw1, cw2 = st.columns(2)
+    if cw1.button("🔴 ДА, НАЧАТЬ МАССОВУЮ ПЕРЕЗАПИСЬ", type="primary"):
+        st.session_state.show_confirm_overwrite = False
+        st.session_state.done_set = st.session_state.done_set - st.session_state.selected_tasks
+        st.session_state.auto_run_selected = True
+        st.rerun()
+    if cw2.button("Отмена"):
+        st.session_state.show_confirm_overwrite = False
         st.rerun()
 
-    st.divider()
+st.divider()
 
-    total_redos = sum(1 for q in st.session_state.qc_state.values() for v in q.values() if v == "redo")
-    st.markdown(f"**Блоков, отправленных на переделку (по всем папкам):** `{total_redos}`")
+json_file_path = os.path.join(base_dir, "all_products.json")
+if not os.path.exists(json_file_path): json_file_path = os.path.join(task['path'], "all_products.json")
+json_text = f"📎 JSON: {os.path.basename(json_file_path)}" if os.path.exists(json_file_path) else "⚠️ JSON не найден!"
 
-    if total_redos > 0:
-        if st.button("🚀 ЗАВЕРШИТЬ КОНТРОЛЬ И ИСПРАВИТЬ БРАК (Автоматом без пауз)", type="primary",
-                     use_container_width=True):
-            st.session_state.show_confirm_qc = True
+st.markdown(f"""
+<div class="card card-accent">
+  <div class="niche-badge">📁 {task['niche']} ➜ {task['strat']}</div>
+  <div style="font-size: 11px; color: #34d399;">📊 {task['xlsx']}</div>
+  <div style="font-size: 11px; color: #a78bfa; margin-top: 3px;">{json_text}</div>
+</div>
+""", unsafe_allow_html=True)
+
+mc1, mc2 = st.columns(2)
+with mc1:
+    if st.button("🤖 Сгенерировать ВСЁ для этой папки", use_container_width=True):
+        with st.spinner("Работаем с AI..."):
+            if run_ai_for_current_task(cur, "ALL"): st.rerun()
+with mc2:
+    with st.popover("🔄 Точечная регенерация (исправить)"):
+        if st.button("Переделать ЗАГОЛОВКИ"):
+            if run_ai_for_current_task(cur, "TITLES"): st.rerun()
+        if st.button("Переделать ОПИСАНИЯ"):
+            if run_ai_for_current_task(cur, "DESCS"): st.rerun()
+        if st.button("Переделать CTA"):
+            if run_ai_for_current_task(cur, "CTAS"): st.rerun()
+
+# --- ПОЛЯ И КОНТРОЛЬ КАЧЕСТВА ---
+col1, col2, col3 = st.columns(3)
+
+
+def qc_radio(label, current_val, key):
+    opts = {"wait": "⏳ Ждет проверки", "ok": "🟢 ОК", "redo": "🔴 Переделать"}
+    return st.radio(label, options=list(opts.keys()), format_func=lambda x: opts[x],
+                    index=list(opts.keys()).index(current_val), key=key, horizontal=True)
+
+
+def set_qc(t, d, c):
+    st.session_state.qc_state[cur] = {"TITLES": t, "DESCS": d, "CTAS": c}
+    save_qc_state(task["path"], st.session_state.qc_state[cur])
+
+
+with col1:
+    raw_t = st.text_area("📝 ЗАГОЛОВКИ", height=340, key="ta_titles")
+    titles = clean_lines(raw_t)
+    st.caption(f"Строк: {len(titles)}")
+    # QC Radio под полем
+    new_t = qc_radio("Оценка:", st.session_state.qc_state[cur]["TITLES"], f"qct_{cur}")
+
+with col2:
+    raw_d = st.text_area("📖 ОПИСАНИЯ", height=340, key="ta_descs")
+    descs = clean_lines(raw_d)
+    st.caption(f"Строк: {len(descs)}")
+    # QC Radio под полем
+    new_d = qc_radio("Оценка:", st.session_state.qc_state[cur]["DESCS"], f"qcd_{cur}")
+
+with col3:
+    raw_c = st.text_area("🎯 CTA", height=340, key="ta_ctas")
+    ctas = clean_lines(raw_c)
+    st.caption(f"Строк: {len(ctas)}")
+    # QC Radio под полем
+    new_c = qc_radio("Оценка:", st.session_state.qc_state[cur]["CTAS"], f"qcc_{cur}")
+
+# Сохранение изменения радиокнопок
+if new_t != st.session_state.qc_state[cur]["TITLES"] or new_d != st.session_state.qc_state[cur]["DESCS"] or new_c != \
+        st.session_state.qc_state[cur]["CTAS"]:
+    set_qc(new_t, new_d, new_c)
+    st.rerun()
+
+st.divider()
+
+# ─── ГЛОБАЛЬНЫЕ КНОПКИ QC И СОХРАНЕНИЯ ────────────────────────────────────────
+qc_b1, qc_b2 = st.columns(2)
+if qc_b1.button("✅ ПОМЕТИТЬ ВСЁ ИДЕАЛЬНЫМ", use_container_width=True):
+    set_qc("ok", "ok", "ok")
+    st.rerun()
+if qc_b2.button("🔴 ОТПРАВИТЬ ВСЁ НА ПЕРЕДЕЛКУ", use_container_width=True):
+    set_qc("redo", "redo", "redo")
+    st.rerun()
+
+write_ready = bool(titles and descs and ctas and task["xlsx"])
+if st.button("💾 СОХРАНИТЬ ТЕКУЩУЮ СТРАНИЦУ В EXCEL", type="primary", use_container_width=True,
+             disabled=not write_ready):
+    write_xlsx(task["xlsx"], titles, descs, ctas)
+    st.session_state.done_set.add(cur)
+    # Оставляем QC таким, каким он был (или ставим OK, если хочешь)
+    st.success("✅ Сохранено в Excel!")
+
+st.divider()
+
+# ─── БЛОК АВТОМАТИЧЕСКОГО ИСПРАВЛЕНИЯ БРАКА ─────────────────────────────────
+total_redos = sum(1 for q in st.session_state.qc_state.values() for v in q.values() if v == "redo")
+
+if total_redos > 0:
+    st.markdown(
+        f"**Блоков, отправленных на переделку (по всем папкам):** <span style='color:#f87171;font-weight:bold;'>{total_redos}</span>",
+        unsafe_allow_html=True)
+    if st.button("🚀 ЗАВЕРШИТЬ КОНТРОЛЬ И ИСПРАВИТЬ БРАК (Автоматом через ИИ)", type="primary",
+                 use_container_width=True):
+        st.session_state.show_confirm_qc = True
+        st.rerun()
+
+    if st.session_state.get("show_confirm_qc", False):
+        st.warning(f"Начнется непрерывный авто-прогон для {total_redos} бракованных блоков.")
+        c_qc1, c_qc2 = st.columns(2)
+        if c_qc1.button("✅ ДА, ИСПРАВИТЬ ВСЁ"):
+            st.session_state.show_confirm_qc = False
+            st.session_state.qc_run_redos = True
             st.rerun()
-
-        if st.session_state.get("show_confirm_qc", False):
-            st.warning(f"Начнется непрерывный авто-прогон для {total_redos} бракованных блоков. Запустить?")
-            c_qc1, c_qc2 = st.columns(2)
-            if c_qc1.button("✅ ДА, ИСПРАВИТЬ ВСЁ"):
-                st.session_state.show_confirm_qc = False
-                st.session_state.qc_run_redos = True
-                st.rerun()
-            if c_qc2.button("❌ Отмена"):
-                st.session_state.show_confirm_qc = False
-                st.rerun()
+        if c_qc2.button("❌ Отмена"):
+            st.session_state.show_confirm_qc = False
+            st.rerun()

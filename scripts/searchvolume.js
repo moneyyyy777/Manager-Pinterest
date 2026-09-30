@@ -234,7 +234,7 @@ async function handleCaptchaWithBuster(page) {
 async function main() {
     console.log(`\n🚀 Запуск автоматического пакетного сбора объемов с SearchVolume.io`);
 
-    const rootDir = process.cwd();
+    const rootDir = __dirname;
     console.log(`🔍 Сканирование папок в поисках файлов '${INPUT_FILENAME}'...`);
 
     const targetFiles = await findTargetFiles(rootDir);
