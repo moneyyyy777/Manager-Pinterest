@@ -372,19 +372,19 @@
 - **Сгенерировано:** Ровно 100 уникальных строк (Title, Description, CTA) нейросетью без использования кода и скриптов. В CTA строго соблюден акцент на слово "FREE" (в ~85% строк), названия продуктов капитализированы (Digital Planner, Planner Bundle, Digital Stickers, Holiday Planner, Planner Templates), описания начинаются с подходящих эмодзи без артикля "A" и без призывов к действию (CTA вынесен строго в отдельную колонку). Все 100 строк на 100% уникальны.
 - **Файл результата:** `Keywords/Artify Studio/Christmas/Bundles/Bundles Christmas Planners/3 Bundles Christmas Planners Intent Digital Planners/Generated_Excel_Content.md`.
 
-### 2 Bundles Christmas Planners Intent Core Digital Planners
-- **Тип стратегии:** Интент (Core Digital Planners / Рождественские, декабрьские и зимние интерактивные цифровые планеры, шаблоны для iPad, GoodNotes и планшетов, гиперссылочные развороты, ежедневные и еженедельные сетки планирования, трекеры подарков и праздничного бюджета, обложки и цифровые дашборды).
-- **Доска:** `Christmas Digital Planner` (Boards_Tags.txt: 33 тега).
+### 2 Bundles Christmas Planners Intent Core Planners
+- **Тип стратегии:** Интент (Core Planners / Цифровые и печатные праздничные планеры, шаблоны для планеров, ежедневные и еженедельные расписания, декабрьские и годовые календари, планеры на 1 неделю и 6 недель, дашборды, разделители, обложки и комплексные системы праздничной организации).
+- **Доска:** `1 Week Holiday Planner` (Boards_Tags.txt: 531 тег).
 - **Стоп-слова из соседних подниш:**
-  - *Fonts:* `font`, `fonts`, `typography`, `calligraphy`, `typeface`, `lettering`, `cursive`
-  - *SVG:* `svg`, `svgs`, `cut file`, `cut files`, `cricut`, `silhouette`, `laser cut`
-  - *Sublimation:* `sublimation`, `sublimate`, `tumbler`, `tumbler wrap`, `mug wrap`, `ugly sweater`
+  - *Fonts:* `font`, `fonts`, `typography`, `calligraphy`, `typeface`, `lettering`, `cursive`, `script`
+  - *SVG:* `svg`, `svgs`, `cut file`, `cut files`, `cricut`, `silhouette`, `laser cut`, `glowforge`, `vinyl`
+  - *Sublimation:* `sublimation`, `sublimate`, `tumbler`, `tumbler wrap`, `mug wrap`, `heat press`, `ugly sweater`
   - *Journaling:* `junk journal`, `scrapbook`, `scrapbooking`, `ephemera`, `papercraft`, `die cut`
   - *Clipart:* `clipart`, `cliparts`, `clip art`
-  - *Маркетплейсы-конкуренты & Софт:* `Etsy`, `Creative Fabrica`, `Creative Market`, `Design Bundles`, `Font Bundles`, `Canva`, `Adobe`
-- **Правило визуального стиля:** Универсальная эстетика цифровых планеров (интерактивная навигация по вкладкам, планшетные шаблоны страниц, современные чистые развороты, уютные зимние дашборды, праздничные календари и матрицы списков подарков) без сужения до единичных узких стилей («watercolor only», «pink only», «boho only»), обеспечивающая 100% совпадение с любым скрапленным пином из поисковой выдачи рождественских цифровых планеров.
-- **Сгенерировано:** Ровно 100 уникальных строк (Title, Description, CTA) силами нейросети без использования кода и скриптов. В 100% CTA присутствует акцент на слово "FREE", типы продуктов капитализированы (Digital Planner, Digital Planners, iPad Planner, GoodNotes Planner, Holiday Planner, December Planner, Winter Planner), описания начинаются с праздничных эмодзи без артикля "A" и без призывов к действию. Все 100 строк в блоках Title, Description и CTA на 100% уникальны.
-- **Файл результата:** `Keywords/Artify Studio/Christmas/Bundles/Bundles Christmas Planners/2 Bundles Christmas Planners Intent Core Digital Planners/Generated_Excel_Content.md`.
+  - *Маркетплейсы-конкуренты & Софт:* `Etsy`, `Creative Fabrica`, `Creative Market`, `Design Bundles`, `Font Bundles`, `Canva`, `Adobe`, `Photoshop`, `Illustrator`, `GoodNotes`, `Notion`, `Excel`, `Google Sheets`
+- **Правило визуального стиля:** Универсальная эстетика праздничного и зимнего планирования (структурированные почасовые блоки, еженедельные развороты, ежемесячные календари, чек-листы дел, обложки планеров, интерактивные и печатные шаблоны) без привязки к узким декоративным техникам («watercolor only», «pink only», «boho only»), обеспечивающая 100% совпадение с любым скрапленным пином из поисковой выдачи по holiday planner, christmas planner, daily schedule, weekly planner.
+- **Сгенерировано:** Ровно 100 уникальных строк (Title, Description, CTA) силами нейросети без использования кода и скриптов. В 100% CTA выдержан акцент на слово "FREE", типы продуктов капитализированы (Christmas Planner, Digital Planner, Holiday Planner, Planner Bundle, Daily Planner, Weekly Planner, Printable Planner, Planner Inserts, Holiday Organizer, Calendar Planner, Countdown Planner, Productivity Planner, Life Planner), все описания начинаются с разнообразных тематических эмодзи без артикля "A" и без призывов к действию. Все 100 строк в блоках Title, Description и CTA на 100% уникальны. Контент записан в `Generated_Excel_Content.md` и перенесен в Excel-файл `.xlsx`.
+- **Файл результата:** `Keywords/Artify Studio/Christmas/Bundles/Bundles Christmas Planners/2 Bundles Christmas Planners Intent Core Planners/Generated_Excel_Content.md`.
 
 ### 11 Bundles Christmas Planners Intent Holiday Events
 - **Тип стратегии:** Интент (Holiday Events / Праздничные маршруты и графики поездок, планирование рождественских вечеринок, организация праздничных банкетов и ужинов, таймлайны семейных зимних мероприятий, корпоративные и годовые планеры праздников, чек-листы праздничных активностей и подарков).

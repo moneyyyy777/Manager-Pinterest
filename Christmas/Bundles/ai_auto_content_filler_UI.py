@@ -106,7 +106,7 @@ def interact_with_ai_studio(prompt: str, expected_blocks: int, json_file_path: s
 
             for attempt in range(1, max_attempts + 1):
                 try:
-                    page.bring_to_front()
+                    # Убрано page.bring_to_front() чтобы окно не дергалось и работало в фоне
                     st.toast(f"🔄 Попытка {attempt}/{max_attempts}: Подготовка AI Studio...")
 
                     page.goto("https://aistudio.google.com/app/u/1/prompts/new_chat", timeout=30000)
@@ -187,12 +187,17 @@ def interact_with_ai_studio(prompt: str, expected_blocks: int, json_file_path: s
                     raise Exception("Таймаут ожидания ответа AI.")
 
                 except Exception as attempt_err:
-                    st.warning(f"⚠️ Попытка {attempt} сбой: {attempt_err}. Перезапуск через 5 сек...")
+                    warning_placeholder = st.empty()
+                    warning_placeholder.warning(f"⚠️ Попытка {attempt} сбой: {attempt_err}. Перезапуск через 5 сек...")
                     time.sleep(5)
+                    warning_placeholder.empty()
 
             raise Exception(f"Все {max_attempts} попыток завершились ошибкой AI Studio.")
         except Exception as e:
-            st.error(f"❌ Ошибка Playwright: {e}")
+            err_str = str(e)
+            st.error("❌ Ошибка соединения с AI Studio или таймаут.")
+            with st.expander("Скопировать полный лог ошибки (нажми тут)"):
+                st.code(err_str, language="text")
             return []
 
 
@@ -215,9 +220,12 @@ def load_qc_state(task_path):
     if os.path.exists(json_path):
         try:
             with open(json_path, "r", encoding="utf-8") as f:
-                return json.load(f)
+                data = json.load(f)
+                if "TAGS" not in data:
+                    data["TAGS"] = "wait"
+                return data
         except: pass
-    return {"TITLES": "wait", "DESCS": "wait", "CTAS": "wait"}
+    return {"TITLES": "wait", "DESCS": "wait", "CTAS": "wait", "TAGS": "wait"}
 
 def save_qc_state(task_path, state):
     json_path = os.path.join(task_path, "qc_state.json")
@@ -287,6 +295,66 @@ def update_text_areas(task_idx):
     st.session_state["ta_titles"] = t
     st.session_state["ta_descs"] = d
     st.session_state["ta_ctas"] = c
+    if "render_keys" in st.session_state:
+        st.session_state.render_keys["ta_titles"] += 1
+        st.session_state.render_keys["ta_descs"] += 1
+        st.session_state.render_keys["ta_ctas"] += 1
+
+def _auto_detect_context(strat_path, base_dir):
+    """Автоматически определяет: тип файла (Filter/Intent), стоп-слова из соседних подниш, тип продукта из тегов."""
+    strat_name = os.path.basename(strat_path)
+    niche_dir = os.path.dirname(strat_path)  # Папка подниши (напр. Bundles Christmas Planners)
+    parent_dir = os.path.dirname(niche_dir)    # Папка уровня выше (напр. Bundles)
+
+    # --- ТИП ФАЙЛА ---
+    is_filter = "Filter" in strat_name or "filter" in strat_name
+    file_type = "ОБЩИЙ (Filter by OpenAI)" if is_filter else "ИНТЕНТ"
+
+    # --- СТОП-СЛОВА из СОСЕДНИХ ПОДНИШ ---
+    stop_words = set()
+    niche_basename = os.path.basename(niche_dir)
+    if os.path.isdir(parent_dir):
+        for sibling in os.listdir(parent_dir):
+            sibling_path = os.path.join(parent_dir, sibling)
+            if not os.path.isdir(sibling_path) or sibling == niche_basename:
+                continue
+            # Извлекаем ключевые слова из имени соседней подниши
+            # Убираем общий префикс (напр. "Bundles Christmas") и берем уникальную часть
+            parts = sibling.split()
+            # Берем слова, которых нет в названии текущей подниши
+            for word in parts:
+                w_lower = word.lower()
+                if len(w_lower) > 2 and w_lower not in niche_basename.lower():
+                    stop_words.add(w_lower)
+
+    # Всегда добавляем стандартные стоп-слова (маркетплейсы, ПО, годы)
+    always_stop = {
+        "etsy", "creative fabrica", "creative market", "design bundles", "font bundles",
+        "canva", "adobe", "photoshop", "illustrator", "goodnotes", "notion",
+        "2021", "2022", "2023", "2024", "2025"
+    }
+    stop_words.update(always_stop)
+
+    # --- ТИП ПРОДУКТА из тегов ---
+    for_main = os.path.join(strat_path, "For Main")
+    tags_text = read_txt(os.path.join(for_main, "Boards_Tags.txt")).lower()
+    product_types = []
+    product_keywords = {
+        "svg": ["svg", "svgs", "cut file", "cut files"],
+        "clipart": ["clipart", "clip art"],
+        "font": ["font", "fonts", "typeface", "typography"],
+        "planner": ["planner", "planners"],
+        "sublimation": ["sublimation", "sublimate"],
+        "sticker": ["sticker", "stickers"],
+        "journal": ["journal", "journaling"],
+        "pattern": ["pattern", "patterns", "seamless"],
+    }
+    for product, keywords in product_keywords.items():
+        if any(kw in tags_text for kw in keywords):
+            product_types.append(product)
+
+    return file_type, sorted(stop_words), product_types
+
 
 def build_prompt(strat_path, base_dir, target="ALL", niche_mode=False, excluded_niches="", use_json=True, niche_hint=""):
     for_main = os.path.join(strat_path, "For Main")
@@ -308,6 +376,10 @@ def build_prompt(strat_path, base_dir, target="ALL", niche_mode=False, excluded_
 
     if missing: return "", missing, 0, None, []
 
+    # ═══ АВТОКОНТЕКСТ: тип файла, стоп-слова, тип продукта ═══
+    file_type, auto_stop_words, product_types = _auto_detect_context(strat_path, base_dir)
+    product_label = ", ".join(product_types).title() if product_types else "Digital Design Resources"
+
     TASK_LABELS = {
         "TITLES": (
             "РОВНО 100 ЗАГОЛОВКОВ (не 99, не 80, не 105 — точно 100 строк)",
@@ -317,13 +389,14 @@ def build_prompt(strat_path, base_dir, target="ALL", niche_mode=False, excluded_
             "РОВНО 100 ОПИСАНИЙ (не 99, не 80, не 105 — точно 100 строк)",
             "⚠️ ОБЯЗАТЕЛЬНО в КАЖДОЙ строке ставь эмодзи по смыслу к содержанию и тегам в самом начале предложения — "
             "это требование не снимается ни при каких условиях, без артикля \"A\" в начале, без призыва к действию внутри, "
-            "1-2 предложения, должны подходить к ЛЮБОЙ картинке из выдачи по данным тегам"
+            "1-2 предложения, должны подходить к ЛЮБОЙ картинке из выдачи по данным тегам."
         ),
         "CTAS": (
             "РОВНО 100 ПРИЗЫВОВ К ДЕЙСТВИЮ — CTA (не 99, не 80, не 105 — точно 100 строк)",
             "⚠️ ОБЯЗАТЕЛЬНО в КАЖДОЙ строке ставь эмодзи по смыслу в самом начале — "
             "это требование не снимается ни при каких условиях, одно короткое предложение, призыв перейти скачать наш товар "
-            "бесплатно на сайте с подборкой лучшего товара, разные формулировки — не повторяться"
+            "бесплатно на сайте с подборкой лучшего товара, разные формулировки — не повторяться. "
+            f"Тип товара с Заглавной (например: {product_label})"
         ),
     }
     CANONICAL_ORDER = ["TITLES", "DESCS", "CTAS"]
@@ -338,88 +411,113 @@ def build_prompt(strat_path, base_dir, target="ALL", niche_mode=False, excluded_
         tasks_text += f"{idx}) {name} ({desc})\n"
     expected = len(blocks_order)
 
+    # ═══ БЛОК: Подсказка по нише ═══
     niche_hint_line = ""
     if niche_mode and niche_hint and niche_hint.strip():
         niche_hint_line = (
-            f"💡 ПОДСКАЗКА ПО НИШЕ (приоритетный ориентир при выборе между несколькими похожими вариантами): "
-            f"если по смыслу тегов ниша может трактоваться неоднозначно — из нескольких похожих тем в списке тегов "
-            f"предпочти формулировку ближе к '{niche_hint.strip()}', ЕСЛИ она реально подтверждается тегами. "
-            f"Не выбирай эту подсказку, если она явно противоречит большинству тегов — она нужна только чтобы "
-            f"направить выбор между близкими вариантами в нужную сторону, а не заменить честный анализ тегов.\n\n"
+            f"💡 ПОДСКАЗКА ПО НИШЕ: если по смыслу тегов ниша может трактоваться неоднозначно — "
+            f"предпочти формулировку ближе к '{niche_hint.strip()}', ЕСЛИ она подтверждается тегами.\n\n"
         )
 
+    # ═══ БЛОК: Исключения ═══
     excluded_block = ""
+    # Объединяем ручные исключения с автоматическими стоп-словами
+    all_excluded = set()
     if excluded_niches and excluded_niches.strip():
+        for term in excluded_niches.strip().split(","):
+            all_excluded.add(term.strip())
+    all_excluded.update(auto_stop_words)
+
+    if all_excluded:
         excluded_block = (
-            f"\n🚫 ЗАПРЕЩЁННЫЕ НИШИ / ТЕМЫ (строго нельзя упоминать и нельзя определять как общую нишу):\n"
-            f"{excluded_niches.strip()}\n"
-            f"Эти темы ПОХОЖИ по смыслу на нашу подборку, но они уже продвигаются ОТДЕЛЬНО — под своими тегами и на свой трафик. "
-            f"Если в текстах (заголовки/описания/CTA) или в определении общей ниши прозвучит слово/название из списка выше — "
-            f"это перетянет чужой трафик на нашу подборку и наоборот, что нам не нужно, так как мы специально разделяем интересы аудитории.\n"
-            f"Поэтому: НИКОГДА не используй сами слова из списка выше ни в текстах, ни в названии ниши. "
-            f"Если тема естественно граничит с одной из запрещённых — используй более общее слово уровня выше "
-            f"или соседний термин, который НЕ входит в список.\n\n"
+            f"\n🚫 СТОП-СЛОВА И ЗАПРЕЩЁННЫЕ ТЕМЫ (строго нельзя упоминать в текстах):\n"
+            f"{', '.join(sorted(all_excluded))}\n"
+            f"Эти слова относятся к СОСЕДНИМ поднишам, которые продвигаются ОТДЕЛЬНО, к конкурирующему ПО или к устаревшим годам. "
+            f"НИКОГДА не используй их в текстах. Если тема граничит с одним из стоп-слов — используй более общий термин.\n\n"
         )
 
+    # ═══ БЛОК: Определение ниши ═══
     niche_block = ""
     if niche_mode:
         niche_block = (
             f"ШАГ 0 — ОПРЕДЕЛИ ОБЩУЮ НИШУ (сделай это ПЕРЕД генерацией текстов):\n"
-            f"Внимательно прочитай ВЕСЬ список тегов выше целиком, от первого до последнего — не цепляйся за первый попавшийся тег "
-            f"и не суди по 2-3 тегам.\n\n"
-            f"Твоя задача — определить САМУЮ ШИРОКУЮ тему, которая ОДИНАКОВО ХОРОШО описывает АБСОЛЮТНО ВСЕ теги из списка - ЭТО САМОЕ ВАЖНОЕ, "
-            f"а не только часть из них, и честно (без додумывания) добавить к ней тип продукта, если он есть в тегах.\n"
+            f"Внимательно прочитай ВЕСЬ список тегов целиком. "
+            f"Определи САМУЮ ШИРОКУЮ тему, которая описывает ВСЕ теги из списка.\n"
             f"{niche_hint_line}"
-            f"Напиши ПЕРВОЙ строкой ответа (вне блоков кода, до них): НИША: <общая ниша на английском>\n\n"
-            f"ШАГ 1 — ГЕНЕРАЦИЯ ПОД ЭТУ НИШУ:\n"
-            f"Дальше генерируй тексты, ориентируясь ИМЕННО на широкую нишу из Шага 0, а не на отдельные теги. "
-            f"Каждый заголовок/описание/CTA должен одинаково хорошо подходить к ЛЮБОЙ картинке, которая может выпасть по ЛЮБОМУ тегу из списка "
-            f"(в примере с едой — и к фото десерта, и к фото кофе, и к фото фруктов одновременно), а не только к картинкам одной под-категории. "
-            f"Не используй слова, которые жёстко привязывают текст к одной под-теме, если ниша шире (например не пиши 'dessert' или 'sweets', "
-            f"если ниша — 'Food & Drinks'; используй нейтральные общие слова уровня ниши\n"
-            f"ТЕСТ НА 100% ВЗАИМОЗАМЕНЯЕМОСТЬ: Перед выводом каждой строки проверь: если на картинке будет нарисована ТОЛЬКО одна простая вещь" 
-            f"(например, звездочка или бутылочка), будет ли этот заголовок/описание/CTA звучать на 100% естественно? Если в тексте упоминается"
-            f"повод или стиль, которого может не быть на картинке — перепиши нейтрально.\n\n"
-            f"⚠️ ШАГ 0 — ЭТО ДОПОЛНИТЕЛЬНАЯ ЗАДАЧА, А НЕ ЗАМЕНА ОСНОВНОЙ. Она НЕ отменяет и НЕ ослабляет ни одно из требований по формату "
-            f"(эмодзи, длина, знаки препинания и т.д.), которые указаны ниже в разделе 'Сделай на английском' и в 'ВАЖНЫЕ ПРАВИЛА'. "
-            f"Определение ниши — это только первый шаг перед генерацией, само содержание текстов после этого шага "
-            f"должно ТОЧНО так же соблюдать все требования к формату, как будто Шага 0 не было.\n\n"
+            f"Напиши ПЕРВОЙ строкой ответа: НИША: <общая ниша на английском>\n\n"
+            f"Дальше генерируй тексты под эту широкую нишу. Каждый текст должен подходить к ЛЮБОЙ картинке "
+            f"по ЛЮБОМУ тегу из списка одновременно.\n\n"
+        )
+
+    # ═══ БЛОК: Тип файла и глубина ═══
+    depth_block = ""
+    if file_type == "ОБЩИЙ (Filter by OpenAI)":
+        depth_block = (
+            f"📌 ТИП ФАЙЛА: ОБЩИЙ (Filter by OpenAI) — теги РАЗНОРОДНЫЕ.\n"
+            f"Пиши ШИРЕ. Тексты должны работать для ВСЕХ тегов одновременно. "
+            f"Используй слова уровня ниши, не уходи в узкую под-тему.\n\n"
+        )
+    else:
+        depth_block = (
+            f"📌 ТИП ФАЙЛА: ИНТЕНТ — теги ОДНОРОДНЫЕ.\n"
+            f"Можно писать ЧУТЬ конкретнее, но не привязывайся к одному объекту. "
+            f"Картинки внутри интента похожи, но всё равно разные.\n\n"
         )
 
     json_line = (
-        "Я прикрепил файл json в котором содержится информация по нашей подборке товара на сайте "
-        "(детально изучи данный файл, чтобы понять что пользователь получит когда перейдет на данный сайт с фото Pinterest)\n"
+        "Я прикрепил файл json с информацией по нашей подборке товара на сайте "
+        "(детально изучи его, чтобы понять что пользователь получит при переходе с Pinterest).\n"
         if (use_json and json_file) else ""
     )
 
     prompt = (
-        f"Привет. Я продвигаю на Pinterest товар.\n"
-        f"{json_line}"
-        f"Теги по которым продвигаюсь (используй их как контекст для ключевых слов, не вставляй теги дословно в тексты):\n"
+        f"Ты — Мастер-Оркестратор для Pinterest. Я продвигаю товар через массовые аккаунты.\n"
+        f"{json_line}\n"
+        f"═══ КОНТЕКСТ БИЗНЕСА ═══\n"
+        f"Мы скрапим картинки из Pinterest по тегам, размещаем их на аккаунтах с Title + Description + CTA. "
+        f"CTA содержит ссылку на наш сайт. Мы НЕ знаем заранее, какая картинка попадётся — "
+        f"поэтому тексты должны подходить к ЛЮБОЙ картинке из выдачи по тегам.\n\n"
+        f"📋 Доска: {board}\n"
+        f"🔗 Ссылка на сайт: {link}\n"
+        f"{depth_block}"
+        f"Теги доски (контекст для ключевых слов, НЕ вставляй дословно в тексты):\n"
         f"{tags}\n"
         f"{excluded_block}"
         f"{niche_block}"
+        f"═══ ЗАДАНИЕ ═══\n"
         f"Сделай на английском:\n"
         f"{tasks_text}\n"
-        f"⚠️ КРИТИЧЕСКИ ВАЖНО: в ответе должно быть РОВНО {expected} блок(ов) кода — ни больше, ни меньше. "
-        f"Не добавляй никаких дополнительных блоков, черновиков, вариантов или примеров сверх перечисленных выше {expected} пункт(ов). "
-        f"Если тебя просят только про одну часть (например только заголовки) — НЕ генерируй заодно описания или CTA, даже для полноты.\n"
-        f"ВАЖНЫЕ ПРАВИЛА:\n"
-        f"- Любой заголовок + любое описание + любой CTA должны сочетаться друг с другом\n"
-        f"- Все тексты в рамках тематики тегов и товара, без выхода за рамки\n"
-        f"- Каждый список помести в отдельный блок кода\n"
-        f"- Без нумерации, без пустых строк между строками\n"
-        f"- В CTA добаявляй с ЗАГЛАВНО БУКВЫ акцент (прмер не fonts, а Fonts) на выгодность перехода на наш сайт, то есть помечай что они получать при переходе на наш сайт по имени товара\n"
-        f"- Так же в CTA пиши в 70% случаев FREE (с акцентом на этом и большими буквами), так они могут получить сейчас уже бесплатно то что им нужно - сделай акцент на FREE с большой буквы и чтобы видно было\n"
-        f"- (ПРАВИЛО КАСАТЕЛЬНО CTA блок про - ПРОГРАММНОГО ОБЕСПЕЧЕНИЯ/ИНСТРУМЕНТОВ — КРИТИЧЕСКИ ВАЖНО): Если в тегах упоминается ПО (Canva, Adobe, Procreate, Cricut, GoodNotes и т. д.), НЕ пишите фразы определнных фирм программно обеспечения в CTA вроде «Fonts for Canva» или «Typography Adobe». "
-        f" Вместо этого делайте акцент на преимуществах, исходя из темы нашей подборки тегов и товаров по ссылке выше. Используйте такие формулировки, которые *идеально подходят* для этих инструментов. Найдите «золотую середину» между тегами и самим продуктом.\n"
-        f"- Только сами тексты, ничего лишнего\n"
-        f"- Так же сделай здесь чтобы не было подвязки под определенный вид тега (потому что нужно чтобы рандомное фото с рандомного тега взяли и оно подошло под эту нишу)\n"
-        f"- ⚠️ НАПОМИНАНИЕ В КОНЦЕ (самое важное, не забудь): в ОПИСАНИЯХ и в CTA эмодзи в начале КАЖДОЙ строки — это жёсткое обязательное требование, "
-        f"проверь перед выводом, что оно выполнено в каждой без исключения строке этих двух блоков.\n"
-        f"- ⚠️ ПЕРЕД ТЕМ КАК ОТПРАВИТЬ ОТВЕТ — посчитай количество строк в каждом блоке кода. В каждом блоке должно быть РОВНО 100 строк. "
-        f"Если получилось меньше — дописывай новые строки, пока не наберётся ровно 100. Если больше — удали лишние. Это критическое требование."
-)
+        f"═══ ПРАВИЛА ФОРМАТА ═══\n"
+        f"- Каждый список помести в ОТДЕЛЬНЫЙ блок кода (```). В ответе РОВНО {expected} блок(ов) кода.\n"
+        f"- Без нумерации, без пустых строк между строками внутри блока.\n"
+        f"- Только сами тексты, ничего лишнего.\n\n"
+        f"═══ ПРАВИЛА КАЧЕСТВА (КРИТИЧЕСКИ ВАЖНО) ═══\n"
+        f"1. УНИКАЛЬНОСТЬ: ВСЕ 100 строк в каждом блоке уникальны. Нельзя написать одну фразу "
+        f"и повторить с разными эмодзи. Используй разные синонимы, разную структуру предложений, "
+        f"разные углы (качество, стиль, применение, эмоция, выгода, тренд).\n\n"
+        f"2. ЗОЛОТОЕ ПРАВИЛО: Рандомный title[17] + рандомный desc[42] + рандомный cta[88] "
+        f"должны ИДЕАЛЬНО сочетаться и подходить к ЛЮБОЙ картинке из выдачи.\n\n"
+        f"3. ПРИНЦИП МАКСИМАЛЬНОЙ ГЛУБИНЫ: Погружайся в тематику ГЛУБОКО, но останавливайся "
+        f"в точке, где ЛЮБОЙ пин из ЛЮБОГО тега всё ещё подходит под текст. "
+        f"Не слишком общо (скучно) и не слишком узко (не подойдёт к большинству картинок).\n\n"
+        f"4. ВИЗУАЛЬНЫЙ СТИЛЬ: Слова типа «watercolor», «boho», «vintage», «minimalist» — "
+        f"используй ТОЛЬКО если они есть в ПОДАВЛЯЮЩЕМ БОЛЬШИНСТВЕ тегов. Иначе пиши нейтрально: "
+        f"«digital», «beautiful», «stunning designs».\n\n"
+        f"5. ДАТЫ: Мы живем в 2026-2027 годах. Категорически НЕ используй 2021-2025!\n\n"
+        f"6. В CTA: В 70% строк используй слово FREE (БОЛЬШИМИ БУКВАМИ). "
+        f"Название типа товара с Заглавной ({product_label}). "
+        f"НЕ упоминай названия ПО (Canva, Adobe, Procreate, GoodNotes).\n\n"
+        f"7. ЭМОДЗИ: В Описаниях и CTA — эмодзи в начале КАЖДОЙ строки. ⚠️ ПРАВИЛО РЕЛЕВАНТНОСТИ И РАЗНООБРАЗИЯ: Эмодзи должны СТРОГО соответствовать тематике ниши! Ищи максимально широкое разнообразие внутри логики ниши (уникально и красиво), но без абсурда. Недопустимо лениво крутить 3-4 одинаковых эмодзи на все 100 строк — используй весь арсенал релевантных (например, 15-25 идеально подходящих). Для CTA также разрешается миксовать их со стандартными «кнопочными» эмодзи конверсии для Pinterest которые дают большую конверсию.\n"
+        f"В Заголовках — БЕЗ эмодзи, БЕЗ знаков препинания в конце.\n\n"
+        f"═══ САМОПРОВЕРКА ПЕРЕД ОТПРАВКОЙ ═══\n"
+        f"Перед выводом ОБЯЗАТЕЛЬНО проверь:\n"
+        f"✅ В каждом блоке РОВНО 100 строк (не 80, не 99, не 105)? Если нет — допиши/удали.\n"
+        f"✅ Все 100 строк уникальны (нет дублей даже с разными эмодзи)?\n"
+        f"✅ В desc и CTA эмодзи стоит в начале КАЖДОЙ строки без исключения?\n"
+        f"✅ Ни одно стоп-слово не просочилось?\n"
+        f"✅ Нет старых годов (2021-2025)?\n"
+        f"Если хоть одна проверка FAIL — исправь перед выводом.\n"
+    )
     return prompt, missing, expected, json_file, blocks_order
 
 def write_xlsx(xlsx_path, titles, descs, ctas):
@@ -461,7 +559,15 @@ if "qc_state" not in st.session_state:
                 save_qc_state(t["path"], st.session_state.qc_state[i])
 
 if "done_set" not in st.session_state:
-    st.session_state.done_set = {i for i, t in enumerate(st.session_state.tasks) if check_xlsx_filled(t["xlsx"])}
+    st.session_state.done_set = set()
+    for i, t in enumerate(st.session_state.tasks):
+        if check_xlsx_filled(t["xlsx"]):
+            qc = st.session_state.qc_state[i]
+            # Если папка отправлена на полную перезапись, не добавляем ее в done_set
+            if qc.get("TITLES") == "redo" and qc.get("DESCS") == "redo" and qc.get("CTAS") == "redo":
+                pass
+            else:
+                st.session_state.done_set.add(i)
 
 if "cur_idx" not in st.session_state:
     remain = sorted(set(range(len(st.session_state.tasks))) - st.session_state.done_set)
@@ -473,6 +579,9 @@ if "selected_tasks" not in st.session_state:
 
 if "ta_titles" not in st.session_state:
     update_text_areas(st.session_state.cur_idx)
+
+if "render_keys" not in st.session_state:
+    st.session_state.render_keys = {"ta_titles": 0, "ta_descs": 0, "ta_ctas": 0}
 
 tasks = st.session_state.tasks
 cur = st.session_state.cur_idx
@@ -520,15 +629,20 @@ def run_ai_for_current_task(task_index, target="ALL", niche_mode=None):
     niche_hint = get_niche_hint_for_task(task_index)
     use_json = st.session_state.get("use_json", True)
     prompt, missing, expected_blocks, json_file, blocks_order = build_prompt(
-        task["path"], base_dir, target, niche_mode=niche_mode, excluded_niches=excluded_niches, use_json=use_json
+        task["path"], base_dir, target, niche_mode=niche_mode, excluded_niches=excluded_niches, use_json=use_json,
+        niche_hint=niche_hint
     )
     if missing:
-        st.error(f"Не хватает файлов: {', '.join(missing)}")
+        st.session_state["_last_ai_error"] = f"❌ Не хватает файлов: {', '.join(missing)}"
         return False
 
     blocks = interact_with_ai_studio(prompt, expected_blocks, json_file)
     if not blocks or len(blocks) < expected_blocks:
-        st.error(f"Сбой парсинга блоков для {task['strat']}.")
+        st.session_state["_last_ai_error"] = (
+            f"❌ AI Studio не вернул нужное количество блоков кода для {task['strat']}. "
+            f"Ожидалось: {expected_blocks}, получено: {len(blocks) if blocks else 0}. "
+            f"Попробуй ещё раз — возможно, модель выдала текст без обёртки в блок кода."
+        )
         return False
 
     key_to_state = {"TITLES": "ta_titles", "DESCS": "ta_descs", "CTAS": "ta_ctas"}
@@ -541,31 +655,60 @@ def run_ai_for_current_task(task_index, target="ALL", niche_mode=None):
         retries = 0
         while len(lines) < REQUIRED_LINES and retries < MAX_LINE_COUNT_RETRIES:
             retries += 1
-            st.warning(f"⚠️ Блок {key}: получено {len(lines)}/{REQUIRED_LINES} строк. Пере-генерирую (попытка {retries}/{MAX_LINE_COUNT_RETRIES})...")
+            line_warn = st.empty()
+            line_warn.warning(f"⚠️ Блок {key}: получено {len(lines)}/{REQUIRED_LINES} строк. Пере-генерирую (попытка {retries}/{MAX_LINE_COUNT_RETRIES})...")
             fix_prompt, fix_missing, fix_expected, fix_json, fix_order = build_prompt(
-                task["path"], base_dir, [key], niche_mode=niche_mode
+                task["path"], base_dir, [key], niche_mode=niche_mode, niche_hint=niche_hint
             )
-            if fix_missing: break
+            if fix_missing:
+                line_warn.empty()
+                break
             fix_blocks = interact_with_ai_studio(fix_prompt, fix_expected, fix_json)
+            line_warn.empty()
             if fix_blocks and len(fix_blocks) >= fix_expected:
                 lines = clean_lines(fix_blocks[0])
                 if len(lines) > REQUIRED_LINES:
                     lines = lines[:REQUIRED_LINES]
 
         if len(lines) < REQUIRED_LINES:
-            st.error(f"❌ Не удалось получить {REQUIRED_LINES} строк для блока {key} после {MAX_LINE_COUNT_RETRIES} попыток.")
-        st.session_state[key_to_state[key]] = "\n".join(lines)
+            st.session_state["_last_ai_error"] = (
+                f"⚠️ Блок {key}: получено {len(lines)}/{REQUIRED_LINES} строк после {MAX_LINE_COUNT_RETRIES} попыток. "
+                f"Данные записаны как есть — проверь и при необходимости переделай этот блок."
+            )
+
+        # Записываем обновленные (и обрезанные до 100) строки в session_state
+        state_key = key_to_state[key]
+        st.session_state[state_key] = "\n".join(lines)
+        if "render_keys" in st.session_state:
+            st.session_state.render_keys[state_key] += 1
 
     st.session_state.just_regenerated.setdefault(task_index, set()).update(blocks_order)
+    
+    # ═══ FIX: Автоматический сброс статуса QC в "Ждет проверки" ═══
+    for key in blocks_order:
+        if task_index in st.session_state.qc_state:
+            st.session_state.qc_state[task_index][key] = "wait"
+    save_qc_state(task["path"], st.session_state.qc_state[task_index])
+
+    # Очищаем прошлую ошибку при успехе
+    st.session_state.pop("_last_ai_error", None)
     return True
 
 
 # ─── МАССОВЫЙ АВТО-ПРОГОН БЕЗ ПАУЗ ───────────────────────────────────────────
+if "success_log" not in st.session_state:
+    st.session_state.success_log = []
+
+if st.session_state.success_log:
+    for msg in st.session_state.success_log[-5:]:  # Показываем последние 5 успешных действий
+        st.success(msg)
+
 if st.session_state.get("auto_run_selected", False):
     remain = sorted([i for i in st.session_state.selected_tasks if i not in st.session_state.done_set])
     if not remain:
         st.success("🎉 Массовый авто-прогон полностью завершен! Все Excel заполнены.")
         st.session_state.auto_run_selected = False
+        st.session_state.success_log.clear()
         st.balloons()
     else:
         cur_target = remain[0]
@@ -578,7 +721,8 @@ if st.session_state.get("auto_run_selected", False):
             if t and d and c:
                 write_xlsx(tasks[cur_target]["xlsx"], t, d, c)
                 st.session_state.done_set.add(cur_target)
-                st.session_state.qc_state[cur_target] = {"TITLES": "wait", "DESCS": "wait", "CTAS": "wait"}
+                old_tag = st.session_state.qc_state[cur_target].get("TAGS", "wait")
+                st.session_state.qc_state[cur_target] = {"TITLES": "wait", "DESCS": "wait", "CTAS": "wait", "TAGS": old_tag}
                 save_qc_state(tasks[cur_target]["path"], st.session_state.qc_state[cur_target])
             st.rerun()
         else:
@@ -591,11 +735,12 @@ elif st.session_state.get("qc_run_redos", False):
     targets_to_redo = []
     for i in range(len(tasks)):
         q = st.session_state.qc_state[i]
-        if "redo" in q.values():
+        e_vals = [q.get("TITLES", ""), q.get("DESCS", ""), q.get("CTAS", "")]
+        if "redo" in e_vals:
             target_idx = i
-            if q["TITLES"] == "redo": targets_to_redo.append("TITLES")
-            if q["DESCS"] == "redo": targets_to_redo.append("DESCS")
-            if q["CTAS"] == "redo": targets_to_redo.append("CTAS")
+            if q.get("TITLES") == "redo": targets_to_redo.append("TITLES")
+            if q.get("DESCS") == "redo": targets_to_redo.append("DESCS")
+            if q.get("CTAS") == "redo": targets_to_redo.append("CTAS")
             break
     if target_idx is None:
         st.success("🎉 Все исправления по Контролю Качества завершены!")
@@ -621,9 +766,17 @@ elif st.session_state.get("qc_run_redos", False):
 # ─── SIDEBAR ──────────────────────────────────────────────────────────────────
 with st.sidebar:
     st.markdown('<div class="main-header">🤖 Auto Filler</div>', unsafe_allow_html=True)
-    if tasks: st.progress(len(st.session_state.done_set) / len(tasks),
-                          text=f"Заполнено Excel: {len(st.session_state.done_set)} / {len(tasks)}")
+    if tasks:
+        total = len(tasks)
+        filled_excel = len(st.session_state.done_set)
+        checked_excel = sum(1 for i in range(total) if all(st.session_state.qc_state[i][k] == "ok" for k in ["TITLES", "DESCS", "CTAS"]))
+        checked_tags = sum(1 for i in range(total) if st.session_state.qc_state[i].get("TAGS") == "ok")
+        
+        st.progress(filled_excel / total, text=f"📝 Заполнено Excel: {filled_excel} / {total}")
+        st.progress(checked_excel / total, text=f"✅ Проверено Excel: {checked_excel} / {total}")
+        st.progress(checked_tags / total, text=f"🏷️ Проверено Тегов: {checked_tags} / {total}")
 
+    st.divider()
     st.markdown("### 📋 Список папок")
     c_sel1, c_sel2 = st.columns(2)
     if c_sel1.button("✅ Выбрать все", use_container_width=True):
@@ -648,15 +801,26 @@ with st.sidebar:
             else: st.session_state.selected_tasks.add(i)
             st.rerun()
 
-        icon = "✅" if i in st.session_state.done_set else ("📊" if t["xlsx"] else "❌")
         q = st.session_state.qc_state[i]
-        if "redo" in q.values(): icon = "🔴"
-        if "wait" in q.values(): icon = "🕐"
+        
+        # Статус тегов
+        t_state = q.get("TAGS", "wait")
+        if t_state == "ok": t_icon = "✅"
+        elif t_state == "redo": t_icon = "🔴"
+        else: t_icon = "🕐"
+        
+        # Статус Excel
+        e_vals = [q["TITLES"], q["DESCS"], q["CTAS"]]
+        if "redo" in e_vals: e_icon = "🔴"
+        elif "wait" in e_vals: e_icon = "🕐"
+        else: e_icon = "✅" if i in st.session_state.done_set else "➖"
+
+        btn_label = f"🏷️{t_icon} 📊{e_icon} | {t['strat']}"
 
         if i == cur:
-            col_btn.markdown(f"<div style='background:rgba(139, 92, 246, 0.15);border:1px solid #8b5cf6;border-radius:6px;padding:4px;font-size:11px;color:inherit;font-weight:bold;'>▶ {t['strat']}</div>", unsafe_allow_html=True)
+            col_btn.markdown(f"<div style='background:rgba(139, 92, 246, 0.15);border:1px solid #8b5cf6;border-radius:6px;padding:6px;font-size:12px;color:inherit;font-weight:bold;display:flex;align-items:center;'>▶ {btn_label}</div>", unsafe_allow_html=True)
         else:
-            if col_btn.button(f"{icon} {t['strat']}", key=f"nav_{i}", use_container_width=True):
+            if col_btn.button(btn_label, key=f"nav_{i}", use_container_width=True):
                 st.session_state.cur_idx = i
                 update_text_areas(i)
                 st.rerun()
@@ -665,7 +829,8 @@ with st.sidebar:
     st.divider()
     st.markdown("### 🚀 Оркестратор (tasks.txt)")
     
-    tasks_txt_path = os.path.join(base_dir, "tasks.txt")
+    WORKSPACE_ROOT = "/Users/kalifornia/Desktop/Pinterest/Managers Pinterest"
+    tasks_txt_path = os.path.join(WORKSPACE_ROOT, "Websites/CloudFlare/artify-studio/scripts/artify_sites_publishing/tasks.txt")
     
     def read_tasks_txt():
         if not os.path.exists(tasks_txt_path): return []
@@ -673,14 +838,21 @@ with st.sidebar:
             return [line.strip() for line in f if line.strip()]
             
     def write_tasks_txt(lines):
+        # Создаем папку, если вдруг её нет
+        os.makedirs(os.path.dirname(tasks_txt_path), exist_ok=True)
         with open(tasks_txt_path, "w", encoding="utf-8") as f:
             f.write("\n".join(lines) + "\n")
 
     current_tasks_txt = read_tasks_txt()
     
-    # 📌 Только общие родительские папки (без цифр потомков!)
-    all_parents = sorted(list(set(t["niche"] for t in tasks)))
-    all_options = all_parents
+    # 📌 Формируем пути относительно корня воркспейса (чтобы Оркестратор их правильно понял)
+    all_options = []
+    for t in tasks:
+        full_path = os.path.join(base_dir, t["niche"])
+        rel_path = os.path.relpath(full_path, WORKSPACE_ROOT)
+        if rel_path not in all_options:
+            all_options.append(rel_path)
+    all_options = sorted(list(set(all_options)))
 
     default_selection = [opt for opt in all_options if opt in current_tasks_txt]
     if not current_tasks_txt and not os.path.exists(tasks_txt_path):
@@ -702,7 +874,7 @@ with st.sidebar:
         for s in selected_for_orch:
             if s not in new_tasks: new_tasks.append(s)
         write_tasks_txt(new_tasks)
-        st.success("✅ Сохранено!")
+        st.success("✅ Сохранено в Оркестратор!")
         st.rerun()
         
     if btn_col2.button("🗑️ Очистить", use_container_width=True):
@@ -733,6 +905,12 @@ if st.session_state.get("show_confirm_overwrite", False):
     if cw1.button("🔴 ДА, НАЧАТЬ МАССОВУЮ ПЕРЕЗАПИСЬ", type="primary"):
         st.session_state.show_confirm_overwrite = False
         st.session_state.done_set = st.session_state.done_set - st.session_state.selected_tasks
+        
+        # Используем JSON для логирования очереди вместо физического удаления Excel-файла
+        for t_idx in st.session_state.selected_tasks:
+            st.session_state.qc_state[t_idx] = {"TITLES": "redo", "DESCS": "redo", "CTAS": "redo", "TAGS": "wait"}
+            save_qc_state(tasks[t_idx]["path"], st.session_state.qc_state[t_idx])
+
         st.session_state.auto_run_selected = True
         st.rerun()
     if cw2.button("Отмена"):
@@ -740,6 +918,16 @@ if st.session_state.get("show_confirm_overwrite", False):
         st.rerun()
 
 st.divider()
+
+def qc_radio(label, current_val, key):
+    opts = {"wait": "⏳ Ждет проверки", "ok": "🟢 ОК", "redo": "🔴 Переделать"}
+    return st.radio(label, options=list(opts.keys()), format_func=lambda x: opts[x],
+                    index=list(opts.keys()).index(current_val), key=key, horizontal=True)
+
+def set_qc(t, d, c, tag=None):
+    if tag is None: tag = st.session_state.qc_state[cur].get("TAGS", "wait")
+    st.session_state.qc_state[cur] = {"TITLES": t, "DESCS": d, "CTAS": c, "TAGS": tag}
+    save_qc_state(task["path"], st.session_state.qc_state[cur])
 
 # ─── ВЕРХНИЙ БЛОК: НАСТРОЙКИ СЛЕВА, ТЕГИ СПРАВА ───────────────────────────────
 top_left, top_right = st.columns([6, 4])
@@ -766,6 +954,15 @@ with top_left:
         "📎 Прикреплять all_products.json к промпту",
         value=st.session_state.use_json
     )
+
+    st.markdown("<div style='height: 10px;'></div>", unsafe_allow_html=True)
+    new_tag_val = qc_radio("🏷️ Оценка тегов (Boards_Tags.txt):", st.session_state.qc_state[cur].get("TAGS", "wait"), f"qc_tag_{cur}")
+    if new_tag_val != st.session_state.qc_state[cur].get("TAGS", "wait"):
+        st.session_state.qc_state[cur]["TAGS"] = new_tag_val
+        save_qc_state(task["path"], st.session_state.qc_state[cur])
+        st.rerun()
+        
+    st.markdown("<div style='height: 10px;'></div>", unsafe_allow_html=True)
 
     with st.expander("🚫 Исключить ниши (по папкам)", expanded=False):
         if st.session_state.niche_exclusion_rules:
@@ -811,19 +1008,38 @@ with top_left:
                 st.session_state.niche_hint_rules.append({"scope": "all" if new_hint_all else new_hint_tasks, "text": new_hint_text.strip()})
                 st.rerun()
 
+    # Отображаем ошибку AI, если она была при последней попытке
+    if "_last_ai_error" in st.session_state and st.session_state["_last_ai_error"]:
+        st.error(st.session_state["_last_ai_error"])
+
+    def try_auto_save(cur_task_idx):
+        t_lines = clean_lines(st.session_state.get("ta_titles", ""))
+        d_lines = clean_lines(st.session_state.get("ta_descs", ""))
+        c_lines = clean_lines(st.session_state.get("ta_ctas", ""))
+        if t_lines and d_lines and c_lines:
+            write_xlsx(st.session_state.tasks[cur_task_idx]["xlsx"], t_lines, d_lines, c_lines)
+
     mc1, mc2 = st.columns(2)
     with mc1:
         if st.button("🤖 Сгенерировать ВСЁ для этой папки", use_container_width=True):
             with st.spinner("Работаем с AI..."):
-                if run_ai_for_current_task(cur, "ALL"): st.rerun()
+                if run_ai_for_current_task(cur, "ALL"):
+                    try_auto_save(cur)
+                    st.rerun()
     with mc2:
         with st.popover("🔄 Точечная регенерация (исправить)"):
             if st.button("Переделать ЗАГОЛОВКИ"):
-                if run_ai_for_current_task(cur, "TITLES"): st.rerun()
+                if run_ai_for_current_task(cur, "TITLES"):
+                    try_auto_save(cur)
+                    st.rerun()
             if st.button("Переделать ОПИСАНИЯ"):
-                if run_ai_for_current_task(cur, "DESCS"): st.rerun()
+                if run_ai_for_current_task(cur, "DESCS"):
+                    try_auto_save(cur)
+                    st.rerun()
             if st.button("Переделать CTA"):
-                if run_ai_for_current_task(cur, "CTAS"): st.rerun()
+                if run_ai_for_current_task(cur, "CTAS"):
+                    try_auto_save(cur)
+                    st.rerun()
 
 def render_tags_copier(tags_content, height=350):
     lines = [line.strip() for line in tags_content.splitlines() if line.strip()]
@@ -926,32 +1142,26 @@ st.divider()
 # --- ПОЛЯ И КОНТРОЛЬ КАЧЕСТВА ---
 col1, col2, col3 = st.columns(3)
 
-def qc_radio(label, current_val, key):
-    opts = {"wait": "⏳ Ждет проверки", "ok": "🟢 ОК", "redo": "🔴 Переделать"}
-    return st.radio(label, options=list(opts.keys()), format_func=lambda x: opts[x],
-                    index=list(opts.keys()).index(current_val), key=key, horizontal=True)
-
-def set_qc(t, d, c):
-    st.session_state.qc_state[cur] = {"TITLES": t, "DESCS": d, "CTAS": c}
-    save_qc_state(task["path"], st.session_state.qc_state[cur])
-
 with col1:
     badge_t = " 🆕 ТОЛЬКО ЧТО ПЕРЕДЕЛАНО" if "TITLES" in st.session_state.just_regenerated.get(cur, set()) else ""
-    raw_t = st.text_area(f"📝 ЗАГОЛОВКИ{badge_t}", height=340, key="ta_titles")
+    raw_t = st.text_area(f"📝 ЗАГОЛОВКИ{badge_t}", value=st.session_state.get("ta_titles", ""), height=340, key=f"ta_titles_w_{st.session_state.render_keys['ta_titles']}")
+    if raw_t != st.session_state.get("ta_titles", ""): st.session_state["ta_titles"] = raw_t
     titles = clean_lines(raw_t)
     st.caption(f"Строк: {len(titles)}")
     new_t = qc_radio("Оценка:", st.session_state.qc_state[cur]["TITLES"], f"qct_{cur}")
 
 with col2:
     badge_d = " 🆕 ТОЛЬКО ЧТО ПЕРЕДЕЛАНО" if "DESCS" in st.session_state.just_regenerated.get(cur, set()) else ""
-    raw_d = st.text_area(f"📖 ОПИСАНИЯ{badge_d}", height=340, key="ta_descs")
+    raw_d = st.text_area(f"📖 ОПИСАНИЯ{badge_d}", value=st.session_state.get("ta_descs", ""), height=340, key=f"ta_descs_w_{st.session_state.render_keys['ta_descs']}")
+    if raw_d != st.session_state.get("ta_descs", ""): st.session_state["ta_descs"] = raw_d
     descs = clean_lines(raw_d)
     st.caption(f"Строк: {len(descs)}")
     new_d = qc_radio("Оценка:", st.session_state.qc_state[cur]["DESCS"], f"qcd_{cur}")
 
 with col3:
     badge_c = " 🆕 ТОЛЬКО ЧТО ПЕРЕДЕЛАНО" if "CTAS" in st.session_state.just_regenerated.get(cur, set()) else ""
-    raw_c = st.text_area(f"🎯 CTA{badge_c}", height=340, key="ta_ctas")
+    raw_c = st.text_area(f"🎯 CTA{badge_c}", value=st.session_state.get("ta_ctas", ""), height=340, key=f"ta_ctas_w_{st.session_state.render_keys['ta_ctas']}")
+    if raw_c != st.session_state.get("ta_ctas", ""): st.session_state["ta_ctas"] = raw_c
     ctas = clean_lines(raw_c)
     st.caption(f"Строк: {len(ctas)}")
     new_c = qc_radio("Оценка:", st.session_state.qc_state[cur]["CTAS"], f"qcc_{cur}")
@@ -961,17 +1171,17 @@ if new_t != st.session_state.qc_state[cur]["TITLES"] or new_d != st.session_stat
     if new_t != st.session_state.qc_state[cur]["TITLES"]: st.session_state.just_regenerated.get(cur, set()).discard("TITLES")
     if new_d != st.session_state.qc_state[cur]["DESCS"]: st.session_state.just_regenerated.get(cur, set()).discard("DESCS")
     if new_c != st.session_state.qc_state[cur]["CTAS"]: st.session_state.just_regenerated.get(cur, set()).discard("CTAS")
-    set_qc(new_t, new_d, new_c)
+    set_qc(new_t, new_d, new_c, st.session_state.qc_state[cur].get("TAGS", "wait"))
     st.rerun()
 
 st.divider()
 
 # ─── ГЛОБАЛЬНЫЕ КНОПКИ QC И СОХРАНЕНИЯ ────────────────────────────────────────
 qc_b1, qc_b2 = st.columns(2)
-if qc_b1.button("✅ ПОМЕТИТЬ ВСЁ ИДЕАЛЬНЫМ", use_container_width=True):
+if qc_b1.button("✅ ПОМЕТИТЬ ТЕКСТЫ ИДЕАЛЬНЫМИ (Без Тегов)", use_container_width=True):
     set_qc("ok", "ok", "ok")
     st.rerun()
-if qc_b2.button("🔴 ОТПРАВИТЬ ВСЁ НА ПЕРЕДЕЛКУ", use_container_width=True):
+if qc_b2.button("🔴 ОТПРАВИТЬ ТЕКСТЫ НА ПЕРЕДЕЛКУ", use_container_width=True):
     set_qc("redo", "redo", "redo")
     st.rerun()
 
